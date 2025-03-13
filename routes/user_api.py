@@ -1,8 +1,9 @@
 from flask import Blueprint, request, jsonify
-from flask_jwt_extended import create_access_token, jwt_required, get_jwt_identity
+from flask_jwt_extended import create_access_token, jwt_required, get_jwt_identity, get_jwt
 from werkzeug.security import generate_password_hash, check_password_hash
 from db.connection import db
 from models.user import User
+from sqlalchemy.exc import SQLAlchemyError
 
 user_bp = Blueprint("user_bp", __name__)
 
@@ -36,43 +37,75 @@ def user_register():
 
 
 @user_bp.route('/user-delete', methods=['DELETE'])
-@jwt_required()
 def user_delete():
-    current_user = get_jwt_identity()
+    """
+    Delete a user account without JWT authentication.
+    The username must be provided in the request body.
+    """
+    try:
+        data = request.get_json()
 
-    # Find the user in the database
-    user = User.query.filter_by(username=current_user).first()
+        # Ensure 'username' is provided in the request
+        if not data or 'username' not in data:
+            return jsonify({"message": "Username is required"}), 400
 
-    if not user:
-        return jsonify({"message": "User not found"}), 404
+        username = data['username']
 
-    # Delete the user
-    db.session.delete(user)
-    db.session.commit()
+        # Find the user in the database
+        user = User.query.filter(User.username.ilike(username.strip())).first()
 
-    return jsonify({"message": "User account deleted successfully"}), 200
+        if not user:
+            return jsonify({"message": "User not found"}), 404
+
+        # Delete the user
+        db.session.delete(user)
+        db.session.commit()
+
+        return jsonify({"message": "User account deleted successfully"}), 200
+
+    except SQLAlchemyError as e:
+        db.session.rollback()
+        return jsonify({"message": "An error occurred", "error": str(e)}), 500
 
 
 @user_bp.route('/update-address', methods=['PUT'])
 @jwt_required()
 def update_address():
-    current_user = get_jwt_identity()  # Get logged-in user from JWT token
-    data = request.get_json()
+    """
+    Update the address of an authenticated user.
+    """
+    try:
+        data = request.get_json()
 
-    if not data or 'address' not in data:
-        return jsonify({"message": "New address is required"}), 400
+        if not data or 'address' not in data:
+            return jsonify({"message": "New address is required"}), 400
 
-    # Fetch the user from the database
-    user = User.query.filter_by(username=current_user).first()
+        # Get user ID from JWT identity and convert it to an integer
+        user_id = int(get_jwt_identity())
 
-    if not user:
-        return jsonify({"message": "User not found"}), 404
+        # Get username from additional JWT claims
+        claims = get_jwt()
+        username = claims.get("username", None)
 
-    # Update only the address field
-    user.address = data['address']
-    db.session.commit()
+        # Ensure valid user identity
+        if not isinstance(user_id, int) or not username:
+            return jsonify({"message": "Invalid user identity."}), 400
 
-    return jsonify({"message": "Address updated successfully"}), 200
+        # Fetch the user from the database
+        user = User.query.filter_by(username=username).first()
+
+        if not user:
+            return jsonify({"message": "User not found"}), 404
+
+        # Update only the address field
+        user.address = data['address']
+        db.session.commit()
+
+        return jsonify({"message": "Address updated successfully"}), 200
+
+    except SQLAlchemyError as e:
+        db.session.rollback()
+        return jsonify({"message": "An error occurred", "error": str(e)}), 500
 
 
 @user_bp.route('/user-login', methods=['POST'])
